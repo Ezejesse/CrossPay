@@ -214,6 +214,55 @@
     )
 )
 
+;; Multi-currency batch processing function 
+(define-public (process-batch-remittances 
+    (transfers-data (list 10 {
+        recipient: principal,
+        amount: uint,
+        currency: (string-ascii 3),
+        recipient-identifier: (string-ascii 50),
+        country-code: (string-ascii 2),
+        purpose-code: (string-ascii 10)
+    }))
+)
+    (let (
+        (sender-balance (default-to u0 (map-get? user-balances tx-sender)))
+        (batch-id (var-get next-transfer-id))
+    )
+        ;; Validate sender has KYC status for batch processing
+        (asserts! (default-to false (map-get? user-kyc-status tx-sender)) err-kyc-required)
+        (asserts! (not (default-to false (map-get? compliance-blocked tx-sender))) err-compliance-blocked)
+        
+        ;; Calculate total cost for all transfers in batch
+        (let (
+            (total-cost (fold calculate-batch-cost transfers-data u0))
+        )
+            (asserts! (>= sender-balance total-cost) err-insufficient-balance)
+            
+            ;; Deduct total cost from sender balance
+            (map-set user-balances tx-sender (- sender-balance total-cost))
+            
+            ;; Process each transfer in the batch
+            (let (
+                (processed-transfers (fold process-single-transfer transfers-data (list)))
+            )
+                ;; Update platform metrics
+                (var-set total-volume (+ (var-get total-volume) (- total-cost (/ (* total-cost platform-fee-rate) u10000))))
+                (var-set platform-treasury (+ (var-get platform-treasury) (/ (* total-cost platform-fee-rate) u10000)))
+                
+                ;; Return batch processing result with transfer IDs
+                (ok {
+                    batch-id: batch-id,
+                    total-transfers: (len transfers-data),
+                    total-amount: total-cost,
+                    processed-at-block: block-height,
+                    transfer-ids: processed-transfers
+                })
+            )
+        )
+    )
+)
+
 ;; Helper function for batch cost calculation
 (define-private (calculate-batch-cost 
     (transfer-item {
